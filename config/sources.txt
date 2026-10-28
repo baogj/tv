@@ -1,12 +1,7 @@
 # IPTV 直播源列表
-# 每行一个 URL；以 # 开头的行为注释，空行忽略
-# 下面是示例源（来自 iptv-org 等公开播放列表），请按需替换成你自己的源
-
-# 【示例】iptv-org 中国频道（streams）
-https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u
-
-# 【示例】iptv-org 中国频道（countries 聚合）
-https://iptv-org.github.io/iptv/countries/cn.m3u
-
-# 【示例】iptv-org CGTN 相关
-https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn_cgtn.m3u
+# 每行填写一个直播源 URL（支持 M3U / M3U8 播放列表，或「频道名,地址」TXT）
+# 以 # 开头的行为注释，空行会被忽略
+# 保存并推送到 main 后，Actions 会自动抓取并更新 output/
+#
+# 示例（去掉行首 # 即可启用）：
+# https://example.com/your-playlist.m3u
