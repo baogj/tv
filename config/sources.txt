@@ -2,6 +2,5 @@
 # 每行填写一个直播源 URL（支持 M3U / M3U8 播放列表，或「频道名,地址」TXT）
 # 以 # 开头的行为注释，空行会被忽略
 # 保存并推送到 main 后，Actions 会自动抓取并更新 output/
-#
-# 示例（去掉行首 # 即可启用）：
-# https://example.com/your-playlist.m3u
+
+https://iptv.445569.xyz/live.m3u
