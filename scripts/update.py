@@ -1,13 +1,27 @@
 #!/usr/bin/env python3
-"""Fetch IPTV sources, merge and write output/live.m3u and output/live.txt."""
+"""Fetch IPTV sources, merge and write output/live.m3u and output/live.txt.
+
+默认保持源原样：不去重、保留原始顺序、保留 #EXTINF 属性（tvg-id / tvg-logo /
+group-title 等）以及 #EXTVLCOPT / #KODIPROP 等附加行，并沿用源 #EXTM3U 头部属性
+（如 x-tvg-url）。
+"""
 
 from __future__ import annotations
 
 import re
 import sys
-import urllib.error
 import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
+
+# ===== 配置 =====
+DEDUPE = False  # True = 按流地址去重（保留首次出现）；False = 保持原样
+TIMEOUT = 30
+USER_AGENT = (
+    "Mozilla/5.0 (compatible; IPTV-Aggregator/1.0; +https://github.com/baogj/tv)"
+)
+DEFAULT_GROUP = "未分组"
+# ================
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCES_FILE = ROOT / "config" / "sources.txt"
@@ -15,137 +29,169 @@ OUT_DIR = ROOT / "output"
 OUT_M3U = OUT_DIR / "live.m3u"
 OUT_TXT = OUT_DIR / "live.txt"
 
-USER_AGENT = (
-    "Mozilla/5.0 (compatible; IPTV-Aggregator/1.0; +https://github.com/baogj/tv)"
-)
-TIMEOUT = 30
+ATTR_RE = re.compile(r'([\w-]+)="([^"]*)"')
+
+
+@dataclass
+class Entry:
+    name: str
+    url: str
+    group: str | None = None
+    extinf: str | None = None  # original #EXTINF line (None for TXT sources)
+    extra: list[str] = field(default_factory=list)  # #EXTVLCOPT, #KODIPROP, ...
 
 
 def load_source_urls(path: Path) -> list[str]:
-    urls: list[str] = []
     if not path.is_file():
         print(f"ERROR: sources file not found: {path}", file=sys.stderr)
-        return urls
+        return []
+    urls = []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        urls.append(line)
+        if line and not line.startswith("#"):
+            urls.append(line)
     return urls
 
 
 def fetch(url: str) -> str:
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": USER_AGENT, "Accept": "*/*"},
-        method="GET",
-    )
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
         raw = resp.read()
-        charset = "utf-8"
-        ctype = resp.headers.get_content_charset()
-        if ctype:
-            charset = ctype
-        return raw.decode(charset, errors="replace")
+        charset = resp.headers.get_content_charset() or "utf-8"
+    return raw.decode(charset, errors="replace").lstrip("\ufeff")
 
 
-def parse_playlist(text: str) -> list[tuple[str, str]]:
-    """Return list of (name, url). Supports M3U and simple name,url TXT."""
-    channels: list[tuple[str, str]] = []
-    lines = [ln.strip() for ln in text.splitlines()]
-    # Drop BOM / empty leading
-    while lines and not lines[0]:
-        lines.pop(0)
-
-    is_m3u = bool(lines) and (
-        lines[0].upper().startswith("#EXTM3U")
-        or any(ln.upper().startswith("#EXTINF") for ln in lines[:20])
-    )
-
-    if is_m3u:
-        name: str | None = None
-        for ln in lines:
-            if not ln:
-                continue
-            upper = ln.upper()
-            if upper.startswith("#EXTINF"):
-                # #EXTINF:-1 attrs...,Name
-                if "," in ln:
-                    name = ln.split(",", 1)[1].strip() or "未命名"
-                else:
-                    name = "未命名"
-                continue
-            if ln.startswith("#"):
-                continue
-            if name is None:
-                name = "未命名"
-            channels.append((name, ln))
-            name = None
-        return channels
-
-    # TXT: name,url  (also tolerate name,url with http(s) on right)
+def parse_m3u(lines: list[str]) -> tuple[dict[str, str], list[Entry]]:
+    header: dict[str, str] = {}
+    entries: list[Entry] = []
+    extinf: str | None = None
+    extra: list[str] = []
+    grp_tag: str | None = None
     for ln in lines:
-        if not ln or ln.startswith("#"):
+        if not ln:
             continue
-        if "," not in ln:
+        up = ln.upper()
+        if up.startswith("#EXTM3U"):
+            header.update(dict(ATTR_RE.findall(ln)))
             continue
-        # Split on last comma before URL-like token, or first comma
-        m = re.match(r"^(.+?),\s*(https?://\S+|rtmp://\S+|rtsp://\S+|.+)$", ln)
-        if not m:
+        if up.startswith("#EXTINF"):
+            extinf, extra, grp_tag = ln, [], None
             continue
-        n, u = m.group(1).strip(), m.group(2).strip()
-        if n and u:
-            channels.append((n, u))
-    return channels
+        if up.startswith("#EXTGRP:"):
+            grp_tag = ln.split(":", 1)[1].strip()
+            extra.append(ln)
+            continue
+        if ln.startswith("#"):
+            if extinf is not None:
+                extra.append(ln)  # #EXTVLCOPT / #KODIPROP etc.
+            continue
+        # stream URL line
+        if extinf is not None:
+            name = extinf.split(",", 1)[1].strip() if "," in extinf else ""
+            attrs = dict(ATTR_RE.findall(extinf.split(",", 1)[0]))
+            group = attrs.get("group-title") or grp_tag
+        else:
+            name, group = "", None
+        entries.append(Entry(name or "未命名", ln, group, extinf, extra))
+        extinf, extra, grp_tag = None, [], None
+    return header, entries
+
+
+def parse_txt(lines: list[str]) -> list[Entry]:
+    entries: list[Entry] = []
+    group: str | None = None
+    for ln in lines:
+        if not ln or ln.startswith("#") or "," not in ln:
+            continue
+        name, url = (s.strip() for s in ln.split(",", 1))
+        if url == "#genre#":
+            group = name
+            continue
+        if name and url:
+            entries.append(Entry(name, url, group))
+    return entries
+
+
+def parse_playlist(text: str) -> tuple[dict[str, str], list[Entry]]:
+    lines = [ln.strip() for ln in text.splitlines()]
+    head = [ln for ln in lines if ln][:20]
+    if head and (head[0].upper().startswith("#EXTM3U")
+                 or any(l.upper().startswith("#EXTINF") for l in head)):
+        return parse_m3u(lines)
+    return {}, parse_txt(lines)
+
+
+def build_extinf(e: Entry) -> str:
+    if e.extinf:
+        return e.extinf
+    attr = f' group-title="{e.group}"' if e.group else ""
+    return f"#EXTINF:-1{attr},{e.name}"
 
 
 def main() -> int:
     urls = load_source_urls(SOURCES_FILE)
-    if not urls:
-        print("No source URLs in config/sources.txt")
-        OUT_DIR.mkdir(parents=True, exist_ok=True)
-        OUT_M3U.write_text("#EXTM3U\n", encoding="utf-8")
-        OUT_TXT.write_text("", encoding="utf-8")
-        return 0
-
+    header: dict[str, str] = {}
+    epg_urls: list[str] = []
+    merged: list[Entry] = []
     seen: set[str] = set()
-    merged: list[tuple[str, str]] = []
-    ok = 0
-    fail = 0
+    ok = fail = 0
 
     for src in urls:
         print(f"Fetching: {src}")
         try:
-            text = fetch(src)
-            parsed = parse_playlist(text)
-            added = 0
-            for name, stream in parsed:
-                key = stream.strip()
-                if not key or key in seen:
-                    continue
-                seen.add(key)
-                merged.append((name.strip() or "未命名", key))
-                added += 1
-            print(f"  OK — {len(parsed)} parsed, {added} new")
-            ok += 1
+            h, entries = parse_playlist(fetch(src))
         except Exception as exc:  # noqa: BLE001 — continue other sources
             print(f"  FAIL — {exc}")
             fail += 1
+            continue
+        ok += 1
+        for k, v in h.items():
+            if k.lower() in ("x-tvg-url", "url-tvg"):
+                for u in v.split(","):
+                    u = u.strip()
+                    if u and u not in epg_urls:
+                        epg_urls.append(u)
+            else:
+                header.setdefault(k, v)
+        added = 0
+        for e in entries:
+            if DEDUPE:
+                if e.url in seen:
+                    continue
+                seen.add(e.url)
+            merged.append(e)
+            added += 1
+        print(f"  OK — {len(entries)} parsed, {added} added")
+
+    if epg_urls:
+        header["x-tvg-url"] = ",".join(epg_urls)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    m3u_lines = ["#EXTM3U"]
-    txt_lines: list[str] = []
-    for name, stream in merged:
-        m3u_lines.append(f"#EXTINF:-1,{name}")
-        m3u_lines.append(stream)
-        txt_lines.append(f"{name},{stream}")
+    head_line = "#EXTM3U" + "".join(f' {k}="{v}"' for k, v in header.items())
+    m3u = [head_line]
+    for e in merged:
+        m3u.append(build_extinf(e))
+        m3u.extend(e.extra)
+        m3u.append(e.url)
+    OUT_M3U.write_text("\n".join(m3u) + "\n", encoding="utf-8")
 
-    OUT_M3U.write_text("\n".join(m3u_lines) + "\n", encoding="utf-8")
-    OUT_TXT.write_text("\n".join(txt_lines) + ("\n" if txt_lines else ""), encoding="utf-8")
+    # TXT: "分组,#genre#" 格式；分组按首次出现顺序，组内保持原始顺序
+    txt: list[str] = []
+    if any(e.group for e in merged):
+        groups: dict[str, list[Entry]] = {}
+        for e in merged:
+            groups.setdefault(e.group or DEFAULT_GROUP, []).append(e)
+        for g, items in groups.items():
+            txt.append(f"{g},#genre#")
+            txt.extend(f"{e.name},{e.url}" for e in items)
+    else:
+        txt = [f"{e.name},{e.url}" for e in merged]
+    OUT_TXT.write_text("\n".join(txt) + ("\n" if txt else ""), encoding="utf-8")
 
     print(
-        f"Done: sources ok={ok} fail={fail}; channels={len(merged)}; "
+        f"Done: sources ok={ok} fail={fail}; channels={len(merged)} "
+        f"(dedupe={'on' if DEDUPE else 'off'}); "
         f"wrote {OUT_M3U.relative_to(ROOT)} and {OUT_TXT.relative_to(ROOT)}"
     )
     return 0
