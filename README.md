@@ -1,52 +1,33 @@
-# tv — IPTV 直播源聚合
+# tv — IPTV 直播源镜像
 
-把多个直播源地址写进仓库，GitHub Actions 定时抓取、去重、合并，通过 **raw** 链接给播放器订阅。
+把直播源地址写进仓库，GitHub Actions 定时下载并 **原样镜像**（逐字节一致，不解析、不去重、不改格式），通过 raw / 加速链接给播放器订阅。
 
-## 订阅地址
+## 订阅地址（live.m3u）
 
-| 格式 | 链接 |
+| 线路 | 链接 |
 |------|------|
-| M3U | https://raw.githubusercontent.com/baogj/tv/main/output/live.m3u |
-| TXT（频道名,地址） | https://raw.githubusercontent.com/baogj/tv/main/output/live.txt |
+| GitHub Raw | https://raw.githubusercontent.com/baogj/tv/main/output/live.m3u |
+| jsDelivr | https://cdn.jsdelivr.net/gh/baogj/tv@main/output/live.m3u |
+| jsDelivr Fastly | https://fastly.jsdelivr.net/gh/baogj/tv@main/output/live.m3u |
+| gh-proxy | https://gh-proxy.com/https://raw.githubusercontent.com/baogj/tv/main/output/live.m3u |
+| ghfast | https://ghfast.top/https://raw.githubusercontent.com/baogj/tv/main/output/live.m3u |
 
-jsDelivr CDN（国内有时更稳）：
-
-- https://cdn.jsdelivr.net/gh/baogj/tv@main/output/live.m3u
-- https://cdn.jsdelivr.net/gh/baogj/tv@main/output/live.txt
-
-把上面任一地址粘贴到支持直播列表的播放器即可（如 TiviMate、IPTV Smarters、影视仓、OK 影视等）。
+> jsDelivr 有缓存，更新可能延迟数小时；需要最新内容时优先用 Raw / gh-proxy / ghfast。
 
 ## 如何添加源
 
-1. 编辑 [`config/sources.txt`](config/sources.txt)
-2. 每行一个直播源 URL（支持 M3U / M3U8 播放列表，或 `频道名,地址` 的 TXT）
-3. `#` 开头为注释，空行忽略
-4. 提交并推送到 `main` 分支，或手动触发工作流
-
-仓库里预置了若干 **示例源**（iptv-org 公开列表），可随时删掉换成你自己的。
+1. 编辑 [`config/sources.txt`](config/sources.txt)，每行一个 URL；`#` 开头为注释，空行忽略
+2. 第 1 个源保存为 `output/live.m3u`，第 2 个为 `output/source2.m3u`，第 3 个为 `output/source3.m3u`，依此类推（各自独立，不合并）
+3. 提交并推送到 `main`，或手动触发工作流
 
 ## 如何更新
 
-自动：
-
-- 每 **6 小时** 跑一次（cron `0 */6 * * *`）
-- 修改 `config/`、`scripts/` 或本工作流后推送到 `main` 也会触发
-
-手动：
-
-1. 打开 [Actions → Update IPTV sources](https://github.com/baogj/tv/actions/workflows/update.yml)
-2. 点击 **Run workflow**
-
-本地调试：
-
-```bash
-python3 scripts/update.py
-```
-
-会生成 / 覆盖 `output/live.m3u` 与 `output/live.txt`。单个源失败不会中断整次合并。
+- 自动：每 **6 小时** 一次（cron `0 */6 * * *`）；修改 `config/`、`scripts/` 或工作流后推送到 `main` 也会触发
+- 手动：[Actions → Update IPTV sources](https://github.com/baogj/tv/actions/workflows/update.yml) → **Run workflow**
+- 本地：`python3 scripts/update.py`
 
 ## 说明
 
-- 脚本仅聚合公开链接，不托管视频内容
-- 默认不去重，保持源原样（顺序、tvg-logo、group-title 等属性）；如需按流地址去重，把 `scripts/update.py` 顶部 `DEDUPE` 改为 `True`
-- 请遵守当地法律法规与源站使用条款；失效源请自行替换
+- 输出文件与源站返回内容 **逐字节一致**（不解码、不转换换行、不改头部）；`.gitattributes` 中 `output/* -text` 防止 Git 转换换行
+- 仅在 HTTP 200 且内容非空时覆盖；下载失败会保留上一次的文件
+- 本仓库仅镜像公开链接，不托管视频内容；请遵守当地法律法规及源站条款

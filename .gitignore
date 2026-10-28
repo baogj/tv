@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
+output/*.tmp
 *$py.class
 *.so
 .Python
