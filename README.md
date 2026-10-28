@@ -48,5 +48,5 @@ python3 scripts/update.py
 ## 说明
 
 - 脚本仅聚合公开链接，不托管视频内容
-- 去重键为流地址 URL，同地址保留第一次出现的频道名
+- 默认不去重，保持源原样（顺序、tvg-logo、group-title 等属性）；如需按流地址去重，把 `scripts/update.py` 顶部 `DEDUPE` 改为 `True`
 - 请遵守当地法律法规与源站使用条款；失效源请自行替换
